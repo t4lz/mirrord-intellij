@@ -1,5 +1,6 @@
 <idea-plugin>
     <extensions defaultExtensionNs="org.jetbrains.plugins.ruby">
         <runConfigurationExtension implementation="com.metalbear.mirrord.products.rubymine.RubyMineRunConfigurationExtension" id="mirrord.RubyMine"/>
+        <RunEnvironmentProvider implementation="com.metalbear.mirrord.products.rubymine.RubyMineRunEnvironmentProvider" id="mirrord.RubyMinRunEnvironmentProvider"/>
     </extensions>
 </idea-plugin>

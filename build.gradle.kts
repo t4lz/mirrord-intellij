@@ -194,6 +194,7 @@ tasks {
 
     runIde {
         environment("PLUGIN_TESTING_ENVIRONMENT", "true")
+        ideDir.set(file("/Users/tal/Applications/RubyMine.app/Contents/"))
     }
 
     // Configure UI tests plugin
