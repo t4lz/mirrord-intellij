@@ -2,7 +2,9 @@
 
 package com.metalbear.mirrord.products.tomcat
 
+import com.intellij.execution.ExecutionException
 import com.intellij.execution.ExecutionListener
+import com.intellij.execution.Platform
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.target.createEnvironmentRequest
@@ -15,11 +17,18 @@ import com.intellij.javaee.appServers.run.localRun.ScriptInfo
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.components.service
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.util.containers.ContainerUtil
 import com.metalbear.mirrord.CONFIG_ENV_NAME
 import com.metalbear.mirrord.MirrordLogger
 import com.metalbear.mirrord.MirrordProjectService
+import org.jetbrains.idea.tomcat.TomcatStartupPolicy
+import org.jetbrains.idea.tomcat.TomcatStartupPolicy.ExecutableCreator
+import org.jetbrains.idea.tomcat.server.TomcatLocalModel
 import org.jetbrains.idea.tomcat.server.TomcatPersistentData
+import java.io.IOException
 import java.nio.file.Paths
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
 private const val DEFAULT_TOMCAT_SERVER_PORT: String = "8005"
@@ -36,6 +45,83 @@ data class CommandLineWithArgs(val command: String, val args: String?)
 
 class TomcatExecutionListener : ExecutionListener {
     private val savedEnvs: ConcurrentHashMap<String, SavedConfigData> = ConcurrentHashMap()
+
+
+    // Adapted from org/jetbrains/idea/tomcat/TomcatStartupPolicy.java getCustomJavaOptions
+    private fun getCustomJavaOptions(tomcatModel: TomcatLocalModel): List<String> {
+        return if (tomcatModel.isUseJmx) {
+            val result: MutableList<String> = ArrayList()
+            result.add("-Dcom.sun.management.jmxremote=")
+            result.add("-Dcom.sun.management.jmxremote.port=" + tomcatModel.JNDI_PORT)
+            result.add("-Dcom.sun.management.jmxremote.ssl=false")
+            val accessFile = tomcatModel.accessFile
+            val passwordFile = tomcatModel.passwordFile
+            if (accessFile == null || passwordFile == null) {
+                result.add("-Dcom.sun.management.jmxremote.authenticate=false")
+            } else {
+                try {
+                    result.add("-Dcom.sun.management.jmxremote.password.file=" + passwordFile.getCanonicalPath())
+                    result.add("-Dcom.sun.management.jmxremote.access.file=" + accessFile.getCanonicalPath())
+                } catch (e: IOException) {
+                    throw ExecutionException(e)
+                }
+            }
+            if (tomcatModel.getVmArgument(TomcatStartupPolicy.RMI_HOST_JAVA_OPT) == null) {
+                result.add("-D" + TomcatStartupPolicy.RMI_HOST_JAVA_OPT + "=127.0.0.1")
+            }
+            if (tomcatModel.isTomEE) {
+                if (tomcatModel.versionHigher(7, 0, 68)) {
+                    result.add("-Dtomee.serialization.class.whitelist=")
+                    result.add("-Dtomee.serialization.class.blacklist=-")
+                }
+                if (tomcatModel.versionHigher(8, 0, 28)) {
+                    result.add("-Dtomee.remote.support=true")
+                    result.add("-Dopenejb.system.apps=true")
+                }
+            }
+            return result
+        } else {
+            Collections.emptyList()
+        }
+    }
+
+
+    // Copied from org/jetbrains/idea/tomcat/TomcatStartupPolicy.java
+    private fun quoteJavaOpts(javaOptions: List<String>): String {
+
+        // IDEA-206243, IDEA-205955: quoting is needed since parameters are passed via ENV var and may contain paths
+        // we will quote manually some known cases, since command line does not need it
+        val quotedOpts = ContainerUtil.map(
+            javaOptions
+        ) { s: String? ->
+            if (StringUtil.containsAnyChar(s!!, "() ?*+&")) {
+                var quoted = StringUtil.wrapWithDoubleQuote(s!!)
+                if (Platform.current() == Platform.WINDOWS) {
+                    // & is escaped on Windows by ^. To start Tomcat it is necessary that & has been escaped twice.
+                    // So ^^ gives ^ and ^& gives &. Then ^& gives &.
+                    quoted = quoted.replace("&", "^^^&")
+                }
+                return@map quoted
+            }
+            s
+        }
+        return java.lang.String.join(" ", quotedOpts)
+    }
+
+    private fun combineJavaOpts(baseJavaOptsValue: String?, customJavaOptions: List<String>): String {
+        assert(customJavaOptions.isNotEmpty())
+        val quotedCustom = quoteJavaOpts(customJavaOptions)
+        //assume that base value is ok and should not be quoted
+        return if (StringUtil.isEmptyOrSpaces(baseJavaOptsValue)) quotedCustom else "$baseJavaOptsValue $quotedCustom"
+    }
+
+    private fun getJavaOptsEnvVarValue(): String {
+        val combinedJavaOpts = ExecutableCreator.combineJavaOpts(
+            envVariables.get(TomcatStartupPolicy.JAVA_VM_ENV_VARIABLE),
+            customJavaOptions
+        )
+
+    }
 
     private fun getConfig(env: ExecutionEnvironment): RunnerSpecificLocalConfigurationBit? {
         if (!env.toString().startsWith("Tomcat")) {
