@@ -23,7 +23,6 @@ import com.metalbear.mirrord.CONFIG_ENV_NAME
 import com.metalbear.mirrord.MirrordLogger
 import com.metalbear.mirrord.MirrordProjectService
 import org.jetbrains.idea.tomcat.TomcatStartupPolicy
-import org.jetbrains.idea.tomcat.TomcatStartupPolicy.ExecutableCreator
 import org.jetbrains.idea.tomcat.server.TomcatLocalModel
 import org.jetbrains.idea.tomcat.server.TomcatPersistentData
 import java.io.IOException
@@ -46,10 +45,13 @@ data class CommandLineWithArgs(val command: String, val args: String?)
 class TomcatExecutionListener : ExecutionListener {
     private val savedEnvs: ConcurrentHashMap<String, SavedConfigData> = ConcurrentHashMap()
 
+    private val JAVA_VM_ENV_VARIABLE = "JAVA_OPTS"
+
 
     // Adapted from org/jetbrains/idea/tomcat/TomcatStartupPolicy.java getCustomJavaOptions
     private fun getCustomJavaOptions(tomcatModel: TomcatLocalModel): List<String> {
-        return if (tomcatModel.isUseJmx) {
+//        return if (tomcatModel.isUseJmx) {
+        return if (true) {
             val result: MutableList<String> = ArrayList()
             result.add("-Dcom.sun.management.jmxremote=")
             result.add("-Dcom.sun.management.jmxremote.port=" + tomcatModel.JNDI_PORT)
@@ -69,16 +71,16 @@ class TomcatExecutionListener : ExecutionListener {
             if (tomcatModel.getVmArgument(TomcatStartupPolicy.RMI_HOST_JAVA_OPT) == null) {
                 result.add("-D" + TomcatStartupPolicy.RMI_HOST_JAVA_OPT + "=127.0.0.1")
             }
-            if (tomcatModel.isTomEE) {
-                if (tomcatModel.versionHigher(7, 0, 68)) {
-                    result.add("-Dtomee.serialization.class.whitelist=")
-                    result.add("-Dtomee.serialization.class.blacklist=-")
-                }
-                if (tomcatModel.versionHigher(8, 0, 28)) {
-                    result.add("-Dtomee.remote.support=true")
-                    result.add("-Dopenejb.system.apps=true")
-                }
-            }
+//            if (tomcatModel.isTomEE) {
+//                if (tomcatModel.versionHigher(7, 0, 68)) {
+//                    result.add("-Dtomee.serialization.class.whitelist=")
+//                    result.add("-Dtomee.serialization.class.blacklist=-")
+//                }
+//                if (tomcatModel.versionHigher(8, 0, 28)) {
+//                    result.add("-Dtomee.remote.support=true")
+//                    result.add("-Dopenejb.system.apps=true")
+//                }
+//            }
             return result
         } else {
             Collections.emptyList()
@@ -108,6 +110,7 @@ class TomcatExecutionListener : ExecutionListener {
         return java.lang.String.join(" ", quotedOpts)
     }
 
+    // Copied from org/jetbrains/idea/tomcat/TomcatStartupPolicy.java
     private fun combineJavaOpts(baseJavaOptsValue: String?, customJavaOptions: List<String>): String {
         assert(customJavaOptions.isNotEmpty())
         val quotedCustom = quoteJavaOpts(customJavaOptions)
@@ -115,12 +118,13 @@ class TomcatExecutionListener : ExecutionListener {
         return if (StringUtil.isEmptyOrSpaces(baseJavaOptsValue)) quotedCustom else "$baseJavaOptsValue $quotedCustom"
     }
 
-    private fun getJavaOptsEnvVarValue(): String {
-        val combinedJavaOpts = ExecutableCreator.combineJavaOpts(
-            envVariables.get(TomcatStartupPolicy.JAVA_VM_ENV_VARIABLE),
+    // Adapted from org/jetbrains/idea/tomcat/TomcatStartupPolicy.java
+    private fun getJavaOptsEnvVarValue(tomcatModel: TomcatLocalModel, envVars: Map<String, String>): String {
+        val customJavaOptions = getCustomJavaOptions(tomcatModel)
+        return combineJavaOpts(
+            envVars[JAVA_VM_ENV_VARIABLE],
             customJavaOptions
         )
-
     }
 
     private fun getConfig(env: ExecutionEnvironment): RunnerSpecificLocalConfigurationBit? {
@@ -202,14 +206,26 @@ class TomcatExecutionListener : ExecutionListener {
 
                     if (SystemInfo.isMac) {
                         patchedPath?.let {
+//                            val model = TomcatLocalModel()
+                            val parentField = startupInfo.javaClass?.getDeclaredField("myParent")
+                            parentField!!.isAccessible = true
+                            val strategy = parentField.get(startupInfo) as CommonStrategy
+                            val serverModelField = strategy.javaClass.getDeclaredField("myServerModel")
+                            serverModelField.isAccessible = true
+                            val tomcatModel = serverModelField.get(strategy) as TomcatLocalModel
+
                             config.startupInfo.USE_DEFAULT = false
                             config.startupInfo.SCRIPT = it
                             config.startupInfo.VM_PARAMETERS = config.appendVMArguments(config.createJavaParameters())
                             args?.let {
                                 config.startupInfo.PROGRAM_PARAMETERS = args
                             }
+
+                            val envVal = getJavaOptsEnvVarValue(tomcatModel, env)
+                            config.envVariables.add(EnvironmentVariable(JAVA_VM_ENV_VARIABLE, envVal, false))
                         }
                     }
+
                 }
             } catch (e: Throwable) {
                 MirrordLogger.logger.debug("Running tomcat project failed: ", e)
